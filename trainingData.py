@@ -3,15 +3,17 @@ import numpy as np
 import json
 import os
 import logging
+import time
+import random
 from typing import List, Dict, Optional
 from embeddingsKNN import setupOpenAI, getEmbedding, saveEmbedding, fitModel, saveTrainingData
 from keywordTrends import getGoogleTrends
 import warnings
 warnings.filterwarnings('ignore')
 
-# Configure logging
+# Configure logging - reduced verbosity
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,  # Only show warnings and errors
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler('training_data_generation.log'),
@@ -90,61 +92,88 @@ def generateTrainingData(keywords: List[str], startDate: str = "2023-01-01", end
     errors = []
     
     for i, keyword in enumerate(keywords):
-        try:
-            logger.info(f"Processing keyword {i+1}/{len(keywords)}: '{keyword}'")
-            print(f"Processing {i+1}/{len(keywords)}: {keyword}")
-            
-            # Step 1: Get embedding for the keyword
-            logger.info(f"Getting embedding for '{keyword}'")
-            embedding = getEmbedding(keyword, model)
-            
-            # Step 2: Get Google Trends data
-            logger.info(f"Fetching Google Trends data for '{keyword}'")
-            googleDf = getGoogleTrends(keyword, startDate, endDate)
-            googleTrend = googleDf['trendValue'].values
-            
-            # Step 3: Generate synthetic ChatGPT trend
-            logger.info(f"Generating synthetic ChatGPT trend for '{keyword}'")
-            chatgptTrend = generateSyntheticChatGPTTrend(googleTrend, keyword)
-            
-            # Step 4: Store the data
-            trainingData[keyword] = {
-                'embedding': embedding.tolist(),  # Convert to list for JSON serialization
-                'google_trend': googleTrend.tolist(),
-                'chatgpt_trend': chatgptTrend.tolist(),
-                'google_stats': {
-                    'mean': float(np.mean(googleTrend)),
-                    'max': float(np.max(googleTrend)),
-                    'min': float(np.min(googleTrend)),
-                    'std': float(np.std(googleTrend))
-                },
-                'chatgpt_stats': {
-                    'mean': float(np.mean(chatgptTrend)),
-                    'max': float(np.max(chatgptTrend)),
-                    'min': float(np.min(chatgptTrend)),
-                    'std': float(np.std(chatgptTrend))
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                print(f"Creating training data for {keyword}")
+                
+                # Step 1: Get embedding for the keyword
+                embedding = getEmbedding(keyword, model)
+                
+                # Step 2: Get Google Trends data with retry logic
+                googleDf = None
+                for trend_retry in range(max_retries):
+                    try:
+                        googleDf = getGoogleTrends(keyword, startDate, endDate)
+                        break
+                    except Exception as trend_error:
+                        if "429" in str(trend_error) or "Too Many Requests" in str(trend_error):
+                            wait_time = (trend_retry + 1) * 30 + random.randint(5, 15)  # 30s, 60s, 90s + random
+                            print(f"Rate limited for {keyword}. Waiting {wait_time} seconds...")
+                            time.sleep(wait_time)
+                            continue
+                        else:
+                            raise trend_error
+                
+                if googleDf is None:
+                    raise Exception("Failed to fetch Google Trends data after all retries")
+                
+                googleTrend = googleDf['trendValue'].values
+                
+                # Step 3: Generate synthetic ChatGPT trend
+                chatgptTrend = generateSyntheticChatGPTTrend(googleTrend, keyword)
+                
+                # Step 4: Store the data
+                trainingData[keyword] = {
+                    'embedding': embedding.tolist(),  # Convert to list for JSON serialization
+                    'google_trend': googleTrend.tolist(),
+                    'chatgpt_trend': chatgptTrend.tolist(),
+                    'google_stats': {
+                        'mean': float(np.mean(googleTrend)),
+                        'max': float(np.max(googleTrend)),
+                        'min': float(np.min(googleTrend)),
+                        'std': float(np.std(googleTrend))
+                    },
+                    'chatgpt_stats': {
+                        'mean': float(np.mean(chatgptTrend)),
+                        'max': float(np.max(chatgptTrend)),
+                        'min': float(np.min(chatgptTrend)),
+                        'std': float(np.std(chatgptTrend))
+                    }
                 }
-            }
-            
-            successfulKeywords += 1
-            logger.info(f"Successfully processed keyword '{keyword}'")
-            
-        except Exception as e:
-            error_msg = f"Error processing keyword '{keyword}': {e}"
-            logger.error(error_msg)
-            print(f"Error processing keyword '{keyword}': {e}")
-            errors.append(error_msg)
-            failedKeywords += 1
-            continue
+                
+                successfulKeywords += 1
+                print(f"Created training data for {keyword}")
+                
+                # Add delay between requests to avoid rate limiting
+                if i < len(keywords) - 1:  # Don't wait after the last keyword
+                    delay = random.uniform(2, 5)  # Random delay between 2-5 seconds
+                    time.sleep(delay)
+                
+                break  # Success, exit retry loop
+                
+            except Exception as e:
+                retry_count += 1
+                if retry_count < max_retries:
+                    wait_time = retry_count * 10 + random.randint(5, 15)  # 10s, 20s, 30s + random
+                    print(f"Error processing '{keyword}' (attempt {retry_count}/{max_retries}). Waiting {wait_time} seconds...")
+                    time.sleep(wait_time)
+                else:
+                    error_msg = f"Error processing keyword '{keyword}' after {max_retries} attempts: {e}"
+                    logger.error(error_msg)
+                    print(f"Error processing keyword '{keyword}': {e}")
+                    errors.append(error_msg)
+                    failedKeywords += 1
+                    break
     
     # Save training data
-    logger.info(f"Saving training data for {successfulKeywords} keywords")
     trainingDataFile = f"data/training_data_{startDate.replace('-', '')}_{endDate.replace('-', '')}.json"
     
     try:
         with open(trainingDataFile, 'w') as f:
             json.dump(trainingData, f, indent=2)
-        logger.info(f"Training data saved to {trainingDataFile}")
         print(f"Training data saved to {trainingDataFile}")
     except Exception as e:
         logger.error(f"Error saving training data: {e}")
@@ -162,7 +191,6 @@ def generateTrainingData(keywords: List[str], startDate: str = "2023-01-01", end
         'errors': errors
     }
     
-    logger.info(f"Training data generation completed. Success rate: {summary['success_rate']:.2%}")
     print(f"\nTraining Data Generation Summary:")
     print(f"Total keywords: {summary['total_keywords']}")
     print(f"Successful: {summary['successful_keywords']}")
@@ -282,3 +310,79 @@ def prepareTrainingDataForModel(trainingData: Dict[str, any]) -> None:
     except Exception as e:
         logger.error(f"Error preparing training data: {e}")
         raise ValueError(f"Failed to prepare training data: {e}")
+
+
+def resumeTrainingDataGeneration(keywords: List[str], startDate: str = "2025-06-01", endDate: str = "2025-06-30", 
+                                model: str = 'text-embedding-ada-002', existingFile: str = None) -> Dict[str, any]:
+    """
+    Resume training data generation from where it left off.
+    
+    Args:
+        keywords (List[str]): List of keywords to generate training data for
+        startDate (str): Start date for data collection
+        endDate (str): End date for data collection
+        model (str): OpenAI embedding model to use
+        existingFile (str): Path to existing training data file to resume from
+        
+    Returns:
+        Dict[str, any]: Training data generation results
+    """
+    print(f"Resuming training data generation for {len(keywords)} keywords...")
+    
+    # Load existing data if provided
+    existingData = {}
+    if existingFile and os.path.exists(existingFile):
+        try:
+            with open(existingFile, 'r') as f:
+                existingData = json.load(f)
+            print(f"Loaded existing data for {len(existingData)} keywords from {existingFile}")
+        except Exception as e:
+            print(f"Error loading existing data: {e}")
+    
+    # Filter out keywords that already exist
+    remainingKeywords = [kw for kw in keywords if kw not in existingData]
+    print(f"Remaining keywords to process: {len(remainingKeywords)}")
+    
+    if not remainingKeywords:
+        print("All keywords already processed!")
+        return {
+            'total_keywords': len(keywords),
+            'successful_keywords': len(existingData),
+            'failed_keywords': 0,
+            'success_rate': 1.0,
+            'training_data_file': existingFile,
+            'date_range': f"{startDate} to {endDate}",
+            'model_used': model,
+            'errors': []
+        }
+    
+    # Generate data for remaining keywords
+    summary = generateTrainingData(
+        keywords=remainingKeywords,
+        startDate=startDate,
+        endDate=endDate,
+        model=model,
+        saveEmbeddings=True
+    )
+    
+    # Merge with existing data
+    if existingData:
+        mergedData = {**existingData, **summary.get('training_data', {})}
+        
+        # Save merged data
+        mergedFile = f"data/training_data_{startDate.replace('-', '')}_{endDate.replace('-', '')}_merged.json"
+        try:
+            with open(mergedFile, 'w') as f:
+                json.dump(mergedData, f, indent=2)
+            print(f"Merged training data saved to {mergedFile}")
+            
+            # Update summary
+            summary['training_data_file'] = mergedFile
+            summary['total_keywords'] = len(keywords)
+            summary['successful_keywords'] = len(mergedData)
+            summary['success_rate'] = len(mergedData) / len(keywords)
+            
+        except Exception as e:
+            print(f"Error saving merged data: {e}")
+    
+    return summary
