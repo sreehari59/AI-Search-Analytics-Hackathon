@@ -6,6 +6,9 @@ from datetime import datetime, timedelta
 import os
 import sys
 from dotenv import load_dotenv
+from collections import Counter
+import plotly.express as px
+import plotly.graph_objects as go
 
 # Load environment variables from .env file
 load_dotenv()
@@ -43,6 +46,8 @@ st.markdown("""
         padding: 1rem;
         border-radius: 0.5rem;
         margin: 0.5rem 0;
+        color: #2c3e50;
+        border-left: 4px solid #1f77b4;
     }
     .success-message {
         background-color: #d4edda;
@@ -58,8 +63,141 @@ st.markdown("""
         border-radius: 0.5rem;
         margin: 1rem 0;
     }
+    .cluster-card {
+        background-color: #f8f9fa;
+        padding: 1.5rem;
+        border-radius: 0.5rem;
+        margin: 1rem 0;
+        border-left: 4px solid #1f77b4;
+        color: #2c3e50;
+    }
+    .cluster-card h3, .cluster-card h4 {
+        color: #1f77b4;
+        margin-bottom: 0.5rem;
+    }
+    .cluster-card p {
+        color: #2c3e50;
+        margin-bottom: 1rem;
+    }
+    /* Set all text to white by default */
+    html, body, [data-testid="stAppViewContainer"], .stApp, .stText, .stMarkdown, .stMetric, .stExpander, .stExpanderHeader, .stExpanderContent, .stButton, .stTextInput, .stSelectbox, .stSlider, .stDateInput, .stSidebar, .stSidebarContent, .stSidebarHeader, .stSidebarFooter, .stSidebarNav, .stSidebarNavItem, .stSidebarNavItemLabel, .stSidebarNavItemIcon, .stSidebarNavItemChevron, .stSidebarNavItemActive, .stSidebarNavItemActiveLabel, .stSidebarNavItemActiveIcon, .stSidebarNavItemActiveChevron {
+        color: #fff !important;
+    }
+    /* Override for cards and metric cards to keep text dark */
+    .cluster-card, .metric-card, .success-message, .info-message {
+        color: #2c3e50 !important;
+    }
+    .cluster-card h3, .cluster-card h4 {
+        color: #1f77b4 !important;
+    }
+    .cluster-card p {
+        color: #2c3e50 !important;
+    }
 </style>
 """, unsafe_allow_html=True)
+
+def load_and_analyze_clusters():
+    """
+    Load the clustered data and create analysis.
+    """
+    try:
+        # Read the CSV file
+        df = pd.read_csv('data/intentionClustered.csv')
+        
+        # Transform the clusters
+        cluster_mapping = {
+            0: 'consideration',
+            1: 'evaluation', 
+            2: 'decision'
+        }
+        
+        # Create a new column with the transformed cluster names
+        df['cluster_name'] = df['cluster'].map(cluster_mapping)
+        
+        # Calculate the count and percentage for each cluster
+        cluster_counts = df['cluster_name'].value_counts()
+        cluster_percentages = (cluster_counts / len(df)) * 100
+        
+        return df, cluster_counts, cluster_percentages, cluster_mapping
+        
+    except Exception as e:
+        st.error(f"Error loading cluster data: {e}")
+        return None, None, None, None
+
+def create_cluster_pie_chart(cluster_percentages):
+    """
+    Create a pie chart for cluster distribution using Plotly for native Streamlit integration.
+    """
+    try:
+        # Prepare data for Plotly
+        clusters = list(cluster_percentages.index)
+        percentages = list(cluster_percentages.values)
+        
+        # Create a DataFrame for Plotly
+        df_pie = pd.DataFrame({
+            'Cluster': clusters,
+            'Percentage': percentages,
+            'Count': [cluster_percentages[cluster] * len(cluster_percentages) / 100 for cluster in clusters]
+        })
+        
+        # Create the pie chart using Plotly
+        fig = px.pie(
+            df_pie, 
+            values='Percentage', 
+            names='Cluster',
+            title='Distribution of User Intentions by Cluster',
+            color_discrete_sequence=['#FF6B6B', '#4ECDC4', '#45B7D1'],  # Red, Teal, Blue
+            hole=0.3  # Makes it a donut chart for better look
+        )
+        
+        # Customize the layout
+        fig.update_layout(
+            title={
+                'text': 'Distribution of User Intentions by Cluster',
+                'x': 0.5,
+                'xanchor': 'center',
+                'font': {'size': 18, 'color': '#2c3e50'}
+            },
+            showlegend=True,
+            legend={
+                'title': 'Cluster Types',
+                'title_font': {'size': 14, 'color': '#2c3e50'},
+                'font': {'size': 12, 'color': '#2c3e50'},
+                'bgcolor': 'rgba(255,255,255,0.8)',
+                'bordercolor': '#2c3e50',
+                'borderwidth': 1
+            },
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            height=500
+        )
+        
+        # Customize the pie chart appearance
+        fig.update_traces(
+            textposition='inside',
+            textinfo='percent+label',
+            textfont={'size': 14, 'color': 'white'},
+            hovertemplate='<b>%{label}</b><br>Percentage: %{percent}<br>Count: %{customdata}<extra></extra>',
+            customdata=df_pie['Count'].round(0).astype(int)
+        )
+        
+        return fig
+        
+    except Exception as e:
+        st.error(f"Error creating pie chart: {e}")
+        return None
+
+def get_example_queries(df, cluster_name, num_examples=5):
+    """
+    Get example queries for a specific cluster.
+    """
+    try:
+        cluster_data = df[df['cluster_name'] == cluster_name]
+        examples = cluster_data['content'].head(num_examples).tolist()
+        return examples
+    except Exception as e:
+        st.error(f"Error getting examples for {cluster_name}: {e}")
+        return []
 
 def create_simple_trendline_plot(individual_results, successful_keywords, prompt):
     """
@@ -123,7 +261,44 @@ def create_simple_trendline_plot(individual_results, successful_keywords, prompt
         return None
 
 def main():
-    # Header removed
+    # Remove the main header/title
+    # st.markdown('<h1 class="main-header">🤖 ChatGPT Trend Predictor & Cluster Analysis</h1>', unsafe_allow_html=True)
+    
+    # Load cluster data
+    with st.spinner("🔄 Loading cluster data..."):
+        df, cluster_counts, cluster_percentages, cluster_mapping = load_and_analyze_clusters()
+    
+    if df is not None:
+        # Display cluster analysis section
+        st.markdown("## 📊 User Intention Cluster Analysis")
+        
+        # Two columns: left for pie chart, right for example queries
+        col1, col2 = st.columns([2, 2])
+        
+        with col1:
+            fig = create_cluster_pie_chart(cluster_percentages)
+            if fig:
+                fig.update_layout(showlegend=False)
+                st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            with st.expander("🔍 Example Queries by Cluster", expanded=False):
+                for cluster_name in cluster_mapping.values():
+                    st.markdown(f"""
+                    <div class="cluster-card">
+                        <h4>🎯 {cluster_name.title()} Cluster</h4>
+                        <p><strong>Description:</strong> Users in this phase are {cluster_name} their options.</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    examples = get_example_queries(df, cluster_name, num_examples=3)
+                    if examples:
+                        for i, example in enumerate(examples, 1):
+                            if len(example) > 150:
+                                example = example[:150] + "..."
+                            st.markdown(f"**{i}.** {example}")
+                    else:
+                        st.markdown("*No examples available*")
+                    st.markdown("---")
     
     # Sidebar for configuration
     st.sidebar.header("⚙️ Configuration")
@@ -150,7 +325,8 @@ def main():
     weights = st.sidebar.selectbox("Weighting Scheme", ["distance", "uniform"])
     
     # Main content area
-    st.markdown("### 📝 Enter your prompt to analyze ChatGPT trends")
+    st.markdown("## 📝 Trend Analysis")
+    st.markdown("Enter your prompt to analyze ChatGPT trends")
     
     # Text input for prompt
     prompt = st.text_input(
@@ -263,7 +439,13 @@ def main():
                 st.error(f"❌ Error during analysis: {e}")
                 st.info("💡 Check the console for detailed error information")
     
-    # Footer removed
+    # Footer
+    st.markdown("---")
+    st.markdown("""
+    <div style='text-align: center; color: #666;'>
+        <p>🤖 ChatGPT Trend Predictor & Cluster Analysis Tool</p>
+    </div>
+    """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main() 
