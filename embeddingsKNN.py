@@ -1135,3 +1135,418 @@ def resetModel():
     
     logger.info("Model state reset completed")
     print("Model state reset. Training data and embeddings cache cleared.")
+
+
+def promptToKeywordsAndAnalyze(prompt: str, startDate: Optional[str] = None, endDate: Optional[str] = None, 
+                              k: int = 3, weights: str = 'distance', model: str = 'text-embedding-ada-002') -> Dict[str, any]:
+    """
+    Convert a prompt to 3 keywords using OpenAI, run inference on each, and return average results.
+    
+    Args:
+        prompt (str): The prompt to convert to keywords
+        startDate (str, optional): Start date for data collection
+        endDate (str, optional): End date for data collection
+        k (int): Number of nearest neighbors to consider
+        weights (str): Weighting scheme ('uniform' or 'distance')
+        model (str): OpenAI embedding model to use
+        
+    Returns:
+        Dict[str, any]: Average analysis results with individual keyword results
+    """
+    print(f"🎯 Converting prompt to keywords: '{prompt}'")
+    
+    # Check and initialize OpenAI client if needed
+    global openai_client
+    if openai_client is None:
+        try:
+            setupOpenAI()
+        except Exception as e:
+            logger.error(f"Failed to initialize OpenAI client: {e}")
+            raise ValueError(f"OpenAI client initialization failed: {e}")
+    
+    try:
+        # Step 1: Generate 3 keywords from the prompt using OpenAI
+        keywords = generateKeywordsFromPrompt(prompt)
+        print(f"✅ Generated keywords: {keywords}")
+        
+        # Step 2: Run inference on each keyword
+        individual_results = []
+        successful_keywords = []
+        
+        for i, keyword in enumerate(keywords):
+            print(f"\n📊 Running inference {i+1}/3 for keyword: '{keyword}'")
+            try:
+                result = analyzeNewKeyword(keyword, startDate, endDate, k, weights, model)
+                individual_results.append(result)
+                successful_keywords.append(keyword)
+                print(f"✅ Successfully analyzed '{keyword}'")
+            except Exception as e:
+                logger.error(f"Error analyzing keyword '{keyword}': {e}")
+                print(f"❌ Failed to analyze '{keyword}': {e}")
+                continue
+        
+        if not individual_results:
+            raise ValueError("No keywords were successfully analyzed")
+        
+        # Step 3: Calculate average results
+        average_result = calculateAverageResults(individual_results, successful_keywords)
+        
+        # Step 4: Create visualizations
+        createPromptAnalysisPlot(average_result, individual_results, successful_keywords)
+        
+        # Step 5: Create trendline plot
+        createTrendlinePlot(individual_results, successful_keywords, prompt)
+        
+        print(f"\n🎉 Analysis completed for {len(successful_keywords)} keywords")
+        print(f"Average Google Trend: {average_result['average_google_trend']:.1f}")
+        print(f"Average Predicted ChatGPT Trend: {average_result['average_predicted_chatgpt']:.1f}")
+        print(f"Average Confidence: {average_result['average_confidence']:.3f}")
+        
+        return {
+            'prompt': prompt,
+            'generated_keywords': keywords,
+            'successful_keywords': successful_keywords,
+            'individual_results': individual_results,
+            'average_result': average_result
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in prompt analysis: {e}")
+        raise ValueError(f"Failed to analyze prompt '{prompt}': {e}")
+
+
+def generateKeywordsFromPrompt(prompt: str) -> List[str]:
+    """
+    Generate 3 relevant keywords from a prompt using OpenAI.
+    
+    Args:
+        prompt (str): The prompt to convert to keywords
+        
+    Returns:
+        List[str]: List of 3 keywords
+    """
+    try:
+        # Create a system message for keyword generation
+        system_message = """You are a keyword generation expert. Given a prompt, generate exactly 3 relevant keywords that would be useful for trend analysis. 
+        The keywords should be:
+        1. Specific and relevant to the prompt
+        2. Commonly searched terms
+        3. Suitable for Google Trends analysis
+        4. Different from each other but related to the same topic
+        
+        Return only the 3 keywords, one per line, without numbering or additional text."""
+        
+        # Generate keywords using OpenAI
+        response = openai_client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": f"Generate 3 keywords for this prompt: {prompt}"}
+            ],
+            max_tokens=100,
+            temperature=0.7
+        )
+        
+        # Extract keywords from response
+        keywords_text = response.choices[0].message.content.strip()
+        keywords = [kw.strip() for kw in keywords_text.split('\n') if kw.strip()]
+        
+        # Ensure we have exactly 3 keywords
+        if len(keywords) < 3:
+            # If we don't have enough, pad with variations
+            while len(keywords) < 3:
+                keywords.append(f"{prompt} {len(keywords) + 1}")
+        elif len(keywords) > 3:
+            # If we have too many, take the first 3
+            keywords = keywords[:3]
+        
+        return keywords
+        
+    except Exception as e:
+        logger.error(f"Error generating keywords from prompt: {e}")
+        # Fallback keywords based on the prompt
+        fallback_keywords = [
+            f"{prompt}",
+            f"{prompt} analysis",
+            f"{prompt} trends"
+        ]
+        print(f"⚠️ Using fallback keywords: {fallback_keywords}")
+        return fallback_keywords
+
+
+def calculateAverageResults(individual_results: List[Dict], successful_keywords: List[str]) -> Dict[str, any]:
+    """
+    Calculate average results from individual keyword analyses.
+    
+    Args:
+        individual_results (List[Dict]): List of individual analysis results
+        successful_keywords (List[str]): List of successfully analyzed keywords
+        
+    Returns:
+        Dict[str, any]: Average results
+    """
+    if not individual_results:
+        return {}
+    
+    # Extract metrics from individual results
+    google_trends = []
+    predicted_chatgpt_trends = []
+    confidences = []
+    correlations = []
+    
+    for result in individual_results:
+        # Google trend mean
+        google_trends.append(result['google_trends']['statistics']['mean_trend'])
+        
+        # Predicted ChatGPT trend mean
+        predicted_chatgpt_trends.append(result['predicted_chatgpt_trend']['statistics']['mean_predicted'])
+        
+        # Prediction confidence
+        confidences.append(result['analysis_summary']['prediction_confidence'])
+        
+        # Trend correlation
+        correlations.append(result['analysis_summary']['trend_correlation'])
+    
+    # Calculate averages
+    average_result = {
+        'average_google_trend': np.mean(google_trends),
+        'average_predicted_chatgpt': np.mean(predicted_chatgpt_trends),
+        'average_confidence': np.mean(confidences),
+        'average_correlation': np.mean(correlations),
+        'std_google_trend': np.std(google_trends),
+        'std_predicted_chatgpt': np.std(predicted_chatgpt_trends),
+        'std_confidence': np.std(confidences),
+        'std_correlation': np.std(correlations),
+        'num_keywords': len(successful_keywords)
+    }
+    
+    return average_result
+
+
+def createPromptAnalysisPlot(average_result: Dict[str, any], individual_results: List[Dict], 
+                           successful_keywords: List[str]):
+    """
+    Create visualization for prompt analysis results.
+    
+    Args:
+        average_result (Dict[str, any]): Average results
+        individual_results (List[Dict]): Individual keyword results
+        successful_keywords (List[str]): List of successful keywords
+    """
+    try:
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+        
+        # Plot 1: Individual keyword results comparison
+        keywords = successful_keywords
+        google_means = [r['google_trends']['statistics']['mean_trend'] for r in individual_results]
+        chatgpt_means = [r['predicted_chatgpt_trend']['statistics']['mean_predicted'] for r in individual_results]
+        
+        x = np.arange(len(keywords))
+        width = 0.35
+        
+        bars1 = ax1.bar(x - width/2, google_means, width, label='Google Trends', alpha=0.8, color='blue')
+        bars2 = ax1.bar(x + width/2, chatgpt_means, width, label='Predicted ChatGPT', alpha=0.8, color='red')
+        
+        ax1.set_xlabel('Keywords')
+        ax1.set_ylabel('Average Trend Value')
+        ax1.set_title('Individual Keyword Analysis Results', fontsize=14, fontweight='bold')
+        ax1.set_xticks(x)
+        ax1.set_xticklabels(keywords, rotation=45)
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # Add values on bars
+        for bars in [bars1, bars2]:
+            for bar in bars:
+                height = bar.get_height()
+                ax1.text(bar.get_x() + bar.get_width()/2., height + 1,
+                        f'{height:.1f}', ha='center', va='bottom', fontsize=9)
+        
+        # Plot 2: Confidence scores
+        confidences = [r['analysis_summary']['prediction_confidence'] for r in individual_results]
+        bars = ax2.bar(keywords, confidences, color='green', alpha=0.7)
+        ax2.set_xlabel('Keywords')
+        ax2.set_ylabel('Prediction Confidence')
+        ax2.set_title('Prediction Confidence by Keyword', fontsize=14, fontweight='bold')
+        ax2.set_ylim(0, 1)
+        ax2.tick_params(axis='x', rotation=45)
+        ax2.grid(True, alpha=0.3)
+        
+        # Add confidence values on bars
+        for bar, conf in zip(bars, confidences):
+            ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
+                    f'{conf:.3f}', ha='center', va='bottom', fontsize=9)
+        
+        # Plot 3: Trend correlations
+        correlations = [r['analysis_summary']['trend_correlation'] for r in individual_results]
+        bars = ax3.bar(keywords, correlations, color='orange', alpha=0.7)
+        ax3.set_xlabel('Keywords')
+        ax3.set_ylabel('Trend Correlation')
+        ax3.set_title('Google vs ChatGPT Trend Correlation', fontsize=14, fontweight='bold')
+        ax3.set_ylim(-1, 1)
+        ax3.tick_params(axis='x', rotation=45)
+        ax3.grid(True, alpha=0.3)
+        
+        # Add correlation values on bars
+        for bar, corr in zip(bars, correlations):
+            ax3.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.02,
+                    f'{corr:.3f}', ha='center', va='bottom', fontsize=9)
+        
+        # Plot 4: Average results summary
+        metrics = ['Google Trends', 'Predicted ChatGPT', 'Confidence', 'Correlation']
+        avg_values = [
+            average_result['average_google_trend'],
+            average_result['average_predicted_chatgpt'],
+            average_result['average_confidence'],
+            average_result['average_correlation']
+        ]
+        std_values = [
+            average_result['std_google_trend'],
+            average_result['std_predicted_chatgpt'],
+            average_result['std_confidence'],
+            average_result['std_correlation']
+        ]
+        
+        bars = ax4.bar(metrics, avg_values, yerr=std_values, capsize=5, 
+                      color=['blue', 'red', 'green', 'orange'], alpha=0.7)
+        ax4.set_ylabel('Average Value')
+        ax4.set_title('Average Results Summary', fontsize=14, fontweight='bold')
+        ax4.grid(True, alpha=0.3)
+        
+        # Add average values on bars
+        for bar, avg_val in zip(bars, avg_values):
+            ax4.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
+                    f'{avg_val:.3f}', ha='center', va='bottom', fontsize=9)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        # Print summary statistics
+        print(f"\n{'='*60}")
+        print("PROMPT ANALYSIS SUMMARY")
+        print(f"{'='*60}")
+        print(f"Number of keywords analyzed: {average_result['num_keywords']}")
+        print(f"Average Google Trend: {average_result['average_google_trend']:.2f} ± {average_result['std_google_trend']:.2f}")
+        print(f"Average Predicted ChatGPT: {average_result['average_predicted_chatgpt']:.2f} ± {average_result['std_predicted_chatgpt']:.2f}")
+        print(f"Average Confidence: {average_result['average_confidence']:.3f} ± {average_result['std_confidence']:.3f}")
+        print(f"Average Correlation: {average_result['average_correlation']:.3f} ± {average_result['std_correlation']:.3f}")
+        
+    except Exception as e:
+        logger.error(f"Error creating prompt analysis plot: {e}")
+        print(f"❌ Error creating visualization: {e}")
+
+
+def createTrendlinePlot(individual_results: List[Dict], successful_keywords: List[str], prompt: str):
+    """
+    Create a trendline plot showing the average predicted ChatGPT trends over time.
+    
+    Args:
+        individual_results (List[Dict]): Individual keyword results
+        successful_keywords (List[str]): List of successful keywords
+        prompt (str): Original prompt for title
+    """
+    try:
+        # Extract time series data
+        dates = []
+        chatgpt_trends = []
+        google_trends = []
+        
+        # Get the first result to extract dates (all should have same date range)
+        if individual_results:
+            first_result = individual_results[0]
+            dates = [pd.to_datetime(item['date']) for item in first_result['google_trends']['data']]
+            
+            # Extract ChatGPT trends for each keyword
+            for result in individual_results:
+                chatgpt_trends.append(result['predicted_chatgpt_trend']['trend_values'])
+                google_trends.append(result['google_trends']['trend_values'])
+        
+        if not dates or not chatgpt_trends:
+            print("❌ No time series data available for trendline plot")
+            return
+        
+        # Convert to numpy arrays
+        chatgpt_trends = np.array(chatgpt_trends)
+        google_trends = np.array(google_trends)
+        
+        # Calculate average trends across keywords
+        avg_chatgpt_trend = np.mean(chatgpt_trends, axis=0)
+        avg_google_trend = np.mean(google_trends, axis=0)
+        std_chatgpt_trend = np.std(chatgpt_trends, axis=0)
+        
+        # Create the trendline plot
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10))
+        
+        # Plot 1: Individual keyword trends
+        colors = ['red', 'orange', 'purple', 'brown', 'pink']
+        for i, (keyword, chatgpt_trend) in enumerate(zip(successful_keywords, chatgpt_trends)):
+            color = colors[i % len(colors)]
+            ax1.plot(dates, chatgpt_trend, color=color, alpha=0.6, linewidth=1.5, 
+                    label=f'{keyword} (Predicted ChatGPT)', linestyle='--')
+        
+        # Plot average trendline
+        ax1.plot(dates, avg_chatgpt_trend, color='red', linewidth=3, 
+                label='Average Predicted ChatGPT', linestyle='-')
+        
+        # Add confidence interval
+        ax1.fill_between(dates, 
+                        avg_chatgpt_trend - std_chatgpt_trend,
+                        avg_chatgpt_trend + std_chatgpt_trend,
+                        color='red', alpha=0.2, label='±1 Std Dev')
+        
+        ax1.set_xlabel('Date')
+        ax1.set_ylabel('Predicted ChatGPT Trend Value')
+        ax1.set_title(f'Predicted ChatGPT Trends Over Time\nPrompt: "{prompt}"', 
+                     fontsize=14, fontweight='bold')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        ax1.set_ylim(0, 100)
+        
+        # Format x-axis dates
+        ax1.xaxis.set_major_locator(plt.matplotlib.dates.WeekdayLocator(interval=1))
+        ax1.xaxis.set_major_formatter(plt.matplotlib.dates.DateFormatter('%m/%d'))
+        plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45)
+        
+        # Plot 2: Comparison with Google Trends
+        ax2.plot(dates, avg_google_trend, color='blue', linewidth=2, 
+                label='Average Google Trends', linestyle='-')
+        ax2.plot(dates, avg_chatgpt_trend, color='red', linewidth=2, 
+                label='Average Predicted ChatGPT', linestyle='--')
+        
+        ax2.set_xlabel('Date')
+        ax2.set_ylabel('Trend Value')
+        ax2.set_title('Google Trends vs Predicted ChatGPT Trends (Average)', 
+                     fontsize=14, fontweight='bold')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        ax2.set_ylim(0, 100)
+        
+        # Format x-axis dates
+        ax2.xaxis.set_major_locator(plt.matplotlib.dates.WeekdayLocator(interval=1))
+        ax2.xaxis.set_major_formatter(plt.matplotlib.dates.DateFormatter('%m/%d'))
+        plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        # Print trendline statistics
+        print(f"\n{'='*60}")
+        print("TRENDLINE ANALYSIS")
+        print(f"{'='*60}")
+        print(f"Time period: {dates[0].strftime('%Y-%m-%d')} to {dates[-1].strftime('%Y-%m-%d')}")
+        print(f"Number of data points: {len(dates)}")
+        print(f"Average ChatGPT trend range: {np.min(avg_chatgpt_trend):.1f} - {np.max(avg_chatgpt_trend):.1f}")
+        print(f"Average Google trend range: {np.min(avg_google_trend):.1f} - {np.max(avg_google_trend):.1f}")
+        print(f"ChatGPT trend volatility: {np.std(avg_chatgpt_trend):.2f}")
+        print(f"Google trend volatility: {np.std(avg_google_trend):.2f}")
+        
+        # Calculate trend direction
+        chatgpt_trend_direction = "↗️ Increasing" if avg_chatgpt_trend[-1] > avg_chatgpt_trend[0] else "↘️ Decreasing"
+        google_trend_direction = "↗️ Increasing" if avg_google_trend[-1] > avg_google_trend[0] else "↘️ Decreasing"
+        
+        print(f"ChatGPT trend direction: {chatgpt_trend_direction}")
+        print(f"Google trend direction: {google_trend_direction}")
+        
+    except Exception as e:
+        logger.error(f"Error creating trendline plot: {e}")
+        print(f"❌ Error creating trendline visualization: {e}")
