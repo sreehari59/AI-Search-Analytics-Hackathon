@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "ChatGPT Interaction Crawler",
+  "version": "1.0",
+  "description": "Crawls ChatGPT user interactions and extracts conversation data",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://chat.openai.com/*",
+    "https://chatgpt.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chat.openai.com/*",
+        "https://chatgpt.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "ChatGPT Crawler"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["injected.js"],
+      "matches": ["https://chat.openai.com/*", "https://chatgpt.com/*"]
+    }
+  ]
+}
